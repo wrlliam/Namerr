@@ -1,0 +1,102 @@
+version: "3.8"
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: namerr-postgres
+    environment:
+      POSTGRES_USER: mediamanager
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mediamanager}
+      POSTGRES_DB: mediamanager
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediamanager"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache (Optional - use with --profile with-redis)
+  redis:
+    image: redis:7-alpine
+    container_name: namerr-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - with-redis
+    restart: unless-stopped
+
+  # Next.js Application (Production)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: namerr-app
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://mediamanager:${POSTGRES_PASSWORD:-mediamanager}@postgres:5432/mediamanager
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-change-this-secret-in-production}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      NODE_ENV: production
+    volumes:
+      - ${MEDIA_PATH:-./media}:/media:ro # Read-only for scanning
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - production
+    restart: unless-stopped
+
+  # Worker Service (Production)
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: namerr-worker
+    environment:
+      DATABASE_URL: postgresql://mediamanager:${POSTGRES_PASSWORD:-mediamanager}@postgres:5432/mediamanager
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      NODE_ENV: production
+    volumes:
+      - ${MEDIA_PATH:-./media}:/media:rw # Read-write for renaming
+      - worker_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - production
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  worker_logs:
+
+# Usage:
+# Development (just PostgreSQL):
+#   docker compose up postgres
+#
+# Development with Redis:
+#   docker compose --profile with-redis up postgres redis
+#
+# Production (all services):
+#   docker compose --profile production up -d
+#
+# Production with Redis:
+#   docker compose --profile production --profile with-redis up -d

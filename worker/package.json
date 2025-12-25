@@ -1,0 +1,23 @@
+{
+  "name": "namerr-worker",
+  "version": "1.0.0",
+  "description": "Background worker service for Namerr media renaming",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun dist/index.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "node-cron": "^3.0.3",
+    "fast-glob": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
