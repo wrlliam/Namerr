@@ -9,6 +9,7 @@ import { users, account } from "@/src/lib/db/schema";
 import { eq } from "drizzle-orm";
 import * as bcrypt from "bcryptjs";
 import { nanoid } from "nanoid";
+import { validatePassword } from "@/src/lib/password-validation";
 
 export async function GET(request: NextRequest) {
   const { getSessionWithRole } = await import("@/src/lib/auth-helpers");
@@ -59,9 +60,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (password.length < 8) {
+    // Validate password strength
+    const validation = validatePassword(password);
+    if (!validation.isValid) {
       return NextResponse.json(
-        { error: "Password must be at least 8 characters" },
+        { error: validation.errors.join(". ") },
         { status: 400 }
       );
     }

@@ -8,6 +8,7 @@ import { db } from "@/src/lib/db";
 import { users, account } from "@/src/lib/db/schema";
 import { eq } from "drizzle-orm";
 import * as bcrypt from "bcryptjs";
+import { validatePassword } from "@/src/lib/password-validation";
 
 export async function GET(request: NextRequest) {
   const { getSessionWithRole } = await import("@/src/lib/auth-helpers");
@@ -87,36 +88,60 @@ export async function PATCH(request: NextRequest) {
         );
       }
 
-      // Get user's account with password
-      const [userAccount] = await db
+      // Get user's account with password (filter by credential provider)
+      // Try both "credential" and "email" provider IDs as better-auth may use either
+      const accounts = await db
         .select()
         .from(account)
-        .where(eq(account.userId, session.user.id))
-        .limit(1);
+        .where(eq(account.userId, session.user.id));
 
-      if (!userAccount || !userAccount.password) {
+      console.log(`Found ${accounts.length} account(s) for user:`, session.user.id);
+
+      if (accounts.length === 0) {
+        console.error("No account found for user:", session.user.id);
         return NextResponse.json(
-          { error: "User account not found or no password set" },
+          { error: "User account not found" },
+          { status: 400 }
+        );
+      }
+
+      // Try to find the account with a password (prefer "credential" or "email" provider)
+      let userAccount = accounts.find(a => a.password) || accounts[0];
+
+      console.log("Using account with providerId:", userAccount.providerId);
+      console.log("Has password:", !!userAccount.password);
+
+      if (!userAccount.password) {
+        console.error("No password set for account:", userAccount.id);
+        return NextResponse.json(
+          { error: "No password set for this account" },
           { status: 400 }
         );
       }
 
       // Verify current password
+      console.log("Verifying password for user:", session.user.id);
+      console.log("Current password length:", currentPassword.length);
+      console.log("Stored hash starts with:", userAccount.password.substring(0, 10));
+
       const isValidPassword = await bcrypt.compare(
         currentPassword,
         userAccount.password
       );
 
       if (!isValidPassword) {
+        console.error("Password verification failed for user:", session.user.id);
         return NextResponse.json(
           { error: "Current password is incorrect" },
           { status: 400 }
         );
       }
 
-      if (newPassword.length < 8) {
+      // Validate new password strength
+      const validation = validatePassword(newPassword);
+      if (!validation.isValid) {
         return NextResponse.json(
-          { error: "Password must be at least 8 characters" },
+          { error: validation.errors.join(". ") },
           { status: 400 }
         );
       }
@@ -126,6 +151,8 @@ export async function PATCH(request: NextRequest) {
         .update(account)
         .set({ password: hashedPassword, updatedAt: new Date() })
         .where(eq(account.userId, session.user.id));
+
+      console.log("Password updated successfully for user:", session.user.id);
     }
 
     return NextResponse.json({

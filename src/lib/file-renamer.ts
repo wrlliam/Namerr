@@ -212,13 +212,18 @@ export class FileRenamer {
 
   /**
    * Rename TV show file to Jellyfin format: "Title S##E##.ext"
+   * Optionally moves the file to a target directory (for organizing into season folders)
    */
   async renameTV(
     filePath: string,
     mediaInfo: MediaInfo,
-    options?: { dryRun?: boolean }
+    options?: {
+      dryRun?: boolean;
+      targetDirectory?: string; // If provided, move file to this directory after rename
+    }
   ): Promise<RenameResult> {
     const dryRun = options?.dryRun || false;
+    const targetDirectory = options?.targetDirectory;
 
     try {
       if (!mediaInfo.season || !mediaInfo.episode) {
@@ -230,7 +235,7 @@ export class FileRenamer {
       }
 
       const extension = path.extname(filePath);
-      const directory = path.dirname(filePath);
+      const directory = targetDirectory || path.dirname(filePath);
 
       // Generate new filename
       const season = String(mediaInfo.season).padStart(2, "0");
@@ -270,10 +275,15 @@ export class FileRenamer {
         };
       }
 
-      // Rename video file
+      // Ensure target directory exists if specified
+      if (targetDirectory) {
+        await fs.mkdir(targetDirectory, { recursive: true });
+      }
+
+      // Rename/move video file
       await fs.rename(filePath, resolvedPath);
 
-      // Rename subtitles
+      // Move subtitles to same directory and rename them
       if (subtitles.length > 0) {
         await this.renameSubtitles(filePath, resolvedPath, subtitles);
       }

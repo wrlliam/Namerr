@@ -443,7 +443,7 @@ export default function SshHostsPage() {
                         <button
                           type="button"
                           onClick={() => setShowPassword(!showPassword)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                         >
                           {showPassword ? (
                             <EyeClosedIcon className="w-4 h-4" />
@@ -485,7 +485,7 @@ export default function SshHostsPage() {
                           <button
                             type="button"
                             onClick={() => setShowPassphrase(!showPassphrase)}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                           >
                             {showPassphrase ? (
                               <EyeClosedIcon className="w-4 h-4" />

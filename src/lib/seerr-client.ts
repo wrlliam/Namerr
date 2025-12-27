@@ -32,29 +32,40 @@ export class SeerrClient {
   private async makeRequest<T>(
     endpoint: string,
     params?: Record<string, string | number>,
-    cacheTTL?: number
+    cacheTTL?: number,
+    forceRefresh = false
   ): Promise<T | null> {
     const cacheKey = `${endpoint}:${JSON.stringify(params || {})}`;
 
-    // Try to get from cache
-    const cached = await seerrCache.get<T>(cacheKey);
-    if (cached !== null) {
-      console.log(`[Seerr ${endpoint}] Cache hit`);
-      return cached;
+    if (forceRefresh) {
+      try {
+        await seerrCache.del(cacheKey);
+      } catch {
+        // Ignore cache clear failures
+      }
     }
 
-    console.log(`[Seerr ${endpoint}] Cache miss, fetching from API`);
+    // Try to get from cache unless forceRefresh
+    if (!forceRefresh) {
+      const cached = await seerrCache.get<T>(cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
+    }
 
     try {
       const url = new URL(`/api/v1/${endpoint}`, this.baseUrl);
       if (params) {
         Object.entries(params).forEach(([key, value]) => {
+          // Use encodeURIComponent for proper %20 encoding (Seerr doesn't accept + for spaces)
           url.searchParams.append(key, String(value));
         });
       }
+      // Replace + with %20 since Seerr requires %20 encoding for spaces
+      const urlString = url.toString().replace(/\+/g, "%20");
 
       const response = await retryFetch(
-        url.toString(),
+        urlString,
         {
           headers: {
             "X-Api-Key": this.apiKey,
@@ -75,7 +86,6 @@ export class SeerrClient {
       );
 
       const data = await response.json();
-      console.log(`Seerr API response for ${endpoint}:`, JSON.stringify(data, null, 2));
 
       // Store in cache with TTL
       // Search results: 1 hour, metadata: 24 hours
@@ -128,16 +138,22 @@ export class SeerrClient {
   async getUserRequests(forceRefresh = false): Promise<SeerrRequest[]> {
     const cacheKey = "user_requests:all";
 
+    // If force refresh, delete existing cached list
+    if (forceRefresh) {
+      try {
+        await seerrCache.del(cacheKey);
+      } catch {
+        // Ignore cache clear failures
+      }
+    }
+
     // Check cache unless force refresh
     if (!forceRefresh) {
       const cached = await seerrCache.get<SeerrRequest[]>(cacheKey);
       if (cached) {
-        console.log("[Seerr] User requests cache hit");
         return cached;
       }
     }
-
-    console.log("[Seerr] Fetching user requests from API");
     const allRequests: SeerrRequest[] = [];
 
     try {
@@ -148,7 +164,8 @@ export class SeerrClient {
           filter: "all",
           sort: "added",
         },
-        600 // 10 minutes TTL for requests list
+        600, // 10 minutes TTL for requests list
+        forceRefresh
       );
 
       if (firstPage?.results) {
@@ -166,7 +183,8 @@ export class SeerrClient {
               sort: "added",
               skip: (page - 1) * 20,
             },
-            600
+            600,
+            forceRefresh
           );
 
           if (pageData?.results) {
@@ -188,12 +206,18 @@ export class SeerrClient {
    */
   async searchMedia(
     query: string,
-    mediaType: "movie" | "tv" = "movie"
+    mediaType: "movie" | "tv" = "movie",
+    forceRefresh = false
   ): Promise<SeerrMediaResult[]> {
-    const data = await this.makeRequest<SeerrSearchResponse>("search", {
-      query,
-      page: 1,
-    });
+    const data = await this.makeRequest<SeerrSearchResponse>(
+      "search",
+      {
+        query,
+        page: 1,
+      },
+      3600,
+      forceRefresh
+    );
 
     if (data?.results) {
       return data.results.filter((r) => r.mediaType === mediaType);
@@ -210,38 +234,99 @@ export class SeerrClient {
     candidateTitle: string,
     threshold = 0.8
   ): number {
-    const searchLower = searchTitle.toLowerCase().trim();
-    const candidateLower = candidateTitle.toLowerCase().trim();
+    // Normalize string: lowercase, remove punctuation, collapse spaces
+    const normalize = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/[^\w\s]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const s = normalize(searchTitle);
+    const c = normalize(candidateTitle);
+
+    if (!s || !c) return 0.0;
 
     // Exact match
-    if (searchLower === candidateLower) {
-      return 1.0;
+    if (s === c) return 1.0;
+
+    // Sequel/series indicators that should NOT be ignored
+    const sequelIndicators = new Set([
+      "2", "3", "4", "5", "6", "7", "8", "9", "10",
+      "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x",
+      "part", "chapter", "volume", "vol",
+    ]);
+
+    // Token-based Dice coefficient (better for titles)
+    const stopwords = new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "of",
+      "in",
+      "to",
+      "for",
+    ]);
+
+    const sTokens = s.split(" ").filter((t) => !stopwords.has(t));
+    const cTokens = c.split(" ").filter((t) => !stopwords.has(t));
+
+    // Check for sequel mismatch - if one has a number/sequel indicator and the other doesn't
+    const sSequelTokens = sTokens.filter((t) => sequelIndicators.has(t) || /^\d+$/.test(t));
+    const cSequelTokens = cTokens.filter((t) => sequelIndicators.has(t) || /^\d+$/.test(t));
+
+    // If candidate has sequel indicators that search doesn't have (or vice versa), penalize heavily
+    const sHasSequel = sSequelTokens.length > 0;
+    const cHasSequel = cSequelTokens.length > 0;
+
+    // If they both have sequel indicators, they must match
+    if (sHasSequel && cHasSequel) {
+      const sSequelSet = new Set(sSequelTokens);
+      const cSequelSet = new Set(cSequelTokens);
+      const sequelMatch = [...sSequelSet].some((t) => cSequelSet.has(t));
+      if (!sequelMatch) {
+        // Different sequel numbers (e.g., "2" vs "3") - very low score
+        return 0.3;
+      }
+    } else if (sHasSequel !== cHasSequel) {
+      // One has a sequel indicator and the other doesn't
+      // e.g., "Now You See Me" vs "Now You See Me 2"
+      // This is likely NOT the same movie, penalize heavily
+      return 0.4;
     }
 
-    // Contains match
-    if (
-      searchLower.includes(candidateLower) ||
-      candidateLower.includes(searchLower)
-    ) {
-      const shorter = Math.min(searchLower.length, candidateLower.length);
-      const longer = Math.max(searchLower.length, candidateLower.length);
-      return shorter / longer;
+    const sSet = new Set(sTokens);
+    const cSet = new Set(cTokens);
+
+    const intersection = [...sSet].filter((t) => cSet.has(t)).length;
+    const dice = (2 * intersection) / (sSet.size + cSet.size);
+
+    // If both strings are effectively single-token (short titles), fallback to a length ratio
+    if (sSet.size <= 1 && cSet.size <= 1) {
+      const shorter = Math.min(s.length, c.length);
+      const longer = Math.max(s.length, c.length);
+      const ratio = shorter / longer;
+
+      // Slightly prefer containment if one contains the other
+      if (s.includes(c) || c.includes(s)) {
+        return Math.max(ratio, 0.6);
+      }
+
+      return ratio;
     }
 
-    // Character overlap
-    const searchChars = new Set(searchLower.replace(/\s/g, ""));
-    const candidateChars = new Set(candidateLower.replace(/\s/g, ""));
-
-    if (searchChars.size === 0 || candidateChars.size === 0) {
-      return 0.0;
+    // Check if one title contains the other (after normalization)
+    // But only boost if they have the same sequel status
+    if ((s.includes(c) || c.includes(s)) && sHasSequel === cHasSequel) {
+      const longer = Math.max(s.length, c.length);
+      const shorter = Math.min(s.length, c.length);
+      const containmentScore = (shorter / longer) * 1.1;
+      // Return the max of dice coefficient and containment score
+      return Math.max(dice, containmentScore);
     }
 
-    const overlap = [...searchChars].filter((char) =>
-      candidateChars.has(char)
-    ).length;
-    const union = new Set([...searchChars, ...candidateChars]).size;
-
-    return union > 0 ? overlap / union : 0.0;
+    return Number.isFinite(dice) ? dice : 0.0;
   }
 
   /**
@@ -251,9 +336,10 @@ export class SeerrClient {
     title: string,
     year?: string,
     mediaType: "movie" | "tv" = "movie",
-    threshold = 0.8
+    threshold = 0.8,
+    forceRefresh = false
   ): Promise<SeerrRequest | null> {
-    const requests = await this.getUserRequests();
+    const requests = await this.getUserRequests(forceRefresh);
 
     let bestMatch: SeerrRequest | null = null;
     let bestScore = 0.0;
@@ -274,12 +360,19 @@ export class SeerrClient {
           ? request.media.releaseDate?.substring(0, 4)
           : request.media.firstAirDate?.substring(0, 4);
 
+      // Skip requests without a title
+      if (!requestTitle.trim()) {
+        continue;
+      }
+
       // Calculate match score
       let titleScore = this.fuzzyMatchTitle(title, requestTitle, threshold);
 
-      // Boost score if years match
+      // Boost score if years match, with ±1 year tolerance
       if (year && requestYear) {
-        if (year === requestYear) {
+        const yearInt = parseInt(year);
+        const requestYearInt = parseInt(requestYear);
+        if (year === requestYear || Math.abs(yearInt - requestYearInt) <= 1) {
           titleScore = Math.min(1.0, titleScore * 1.2);
         } else {
           titleScore *= 0.7; // Penalize year mismatch
@@ -292,6 +385,12 @@ export class SeerrClient {
       }
     }
 
+    if (bestMatch) {
+      console.log(
+        `[Seerr] Request match: "${title}" -> "${bestMatch.media.title || bestMatch.media.name}" (${(bestScore * 100).toFixed(0)}%)`
+      );
+    }
+
     return bestMatch;
   }
 
@@ -301,66 +400,67 @@ export class SeerrClient {
   async verifyMovie(
     title: string,
     year?: string,
-    threshold = 0.8
+    threshold = 0.8,
+    forceRefresh = false,
+    fileName?: string
   ): Promise<SeerrVerifyResult<SeerrMovieData>> {
-    // First, check user requests
-    const requestMatch = await this.findMatchingRequest(
-      title,
-      year,
-      "movie",
-      threshold
-    );
+    let searchResults = await this.searchMedia(title, "movie", forceRefresh);
 
-    if (requestMatch) {
-      const media = requestMatch.media;
-      console.log("Seerr request match media:", JSON.stringify(media, null, 2));
-      return {
-        verified: true,
-        data: {
-          title: media.title || title,
-          release_date: media.releaseDate || "",
-          overview: media.overview || "",
-          id: media.tmdbId,
-          vote_average: media.voteAverage,
-          poster_path: media.posterPath || media.poster_path || null,
-          backdrop_path: (media as any).backdropPath || (media as any).backdrop_path || null,
-          source: "seerr_request",
-          request_status: requestMatch.status,
-          match_score: 1.0,
-        },
-      };
+    // If no results, try fallback queries using filename (if provided)
+    if ((!searchResults || searchResults.length === 0) && fileName) {
+      const { PatternCleaner } = await import("./pattern-cleaner");
+      const cleaner = new PatternCleaner();
+      const cleaned = cleaner.cleanForSearch(fileName);
+
+      searchResults = await this.searchMedia(cleaned, "movie", forceRefresh);
+
+      // Try cleaned + year if still nothing
+      if ((!searchResults || searchResults.length === 0) && year) {
+        const q = `${cleaned} ${year}`;
+        searchResults = await this.searchMedia(q, "movie", forceRefresh);
+      }
     }
 
-    // If not in requests, search Seerr's media database
-    const searchResults = await this.searchMedia(title, "movie");
-
-    if (searchResults.length > 0) {
-      let bestMatch: SeerrMediaResult | null = null;
-      let bestScore = 0.0;
-
-      for (const result of searchResults.slice(0, 5)) {
-        // Check top 5
+    if (searchResults && searchResults.length > 0) {
+      // Score ALL results (not just first 5)
+      const scoredResults = searchResults.map((result) => {
         const resultTitle = result.title || "";
         const resultYear = result.releaseDate?.substring(0, 4);
-
         let score = this.fuzzyMatchTitle(title, resultTitle, threshold);
 
-        // Boost for year match
+        // Apply year matching with ±1 year tolerance
         if (year && resultYear) {
-          if (year === resultYear) {
+          const yearInt = parseInt(year);
+          const resultYearInt = parseInt(resultYear);
+          if (year === resultYear || Math.abs(yearInt - resultYearInt) <= 1) {
             score = Math.min(1.0, score * 1.2);
           } else {
-            score *= 0.7;
+            score *= 0.7; // Penalize year mismatch
           }
         }
 
-        if (score > bestScore && score >= threshold) {
-          bestScore = score;
-          bestMatch = result;
-        }
-      }
+        return { result, score, resultTitle, resultYear };
+      });
 
-      if (bestMatch) {
+      // Sort by score DESCENDING
+      scoredResults.sort((a, b) => b.score - a.score);
+
+      // Log condensed top 3 candidates
+      const top3 = scoredResults.slice(0, 3).map(
+        (item) => `"${item.resultTitle}" (${item.resultYear || "?"}) ${(item.score * 100).toFixed(0)}%`
+      );
+      console.log(`[Seerr] Movie "${title}" -> candidates: ${top3.join(" | ")}`);
+
+      // Select best match above threshold
+      const bestScoredResult = scoredResults[0];
+      if (bestScoredResult && bestScoredResult.score >= threshold) {
+        const bestMatch = bestScoredResult.result;
+        const bestScore = bestScoredResult.score;
+
+        console.log(
+          `[Seerr] Movie matched: "${title}" -> "${bestMatch.title}" (${(bestScore * 100).toFixed(0)}%)`
+        );
+
         return {
           verified: true,
           data: {
@@ -370,12 +470,58 @@ export class SeerrClient {
             id: bestMatch.id,
             vote_average: bestMatch.voteAverage,
             poster_path: bestMatch.posterPath || bestMatch.poster_path || null,
-            backdrop_path: (bestMatch as any).backdropPath || (bestMatch as any).backdrop_path || null,
+            backdrop_path:
+              (bestMatch as any).backdropPath ||
+              (bestMatch as any).backdrop_path ||
+              null,
             source: "seerr_search",
             match_score: bestScore,
           },
         };
+      } else {
+        console.log(
+          `[Seerr] Movie no match: "${title}" (best: ${(bestScoredResult?.score * 100 || 0).toFixed(0)}% < ${(threshold * 100).toFixed(0)}%)`
+        );
       }
+    }
+
+    // Fallback: check user requests
+    const requestMatch = await this.findMatchingRequest(
+      title,
+      year,
+      "movie",
+      threshold,
+      forceRefresh
+    );
+
+    if (requestMatch) {
+      const media = requestMatch.media;
+      const requestTitle = media.title || "";
+      const computedScore = this.fuzzyMatchTitle(
+        title,
+        requestTitle,
+        threshold
+      );
+      console.log(
+        `[Seerr] Movie matched (request): "${title}" -> "${requestTitle}" (${(computedScore * 100).toFixed(0)}%)`
+      );
+
+      return {
+        verified: true,
+        data: {
+          title: media.title || title,
+          release_date: media.releaseDate || "",
+          overview: media.overview || "",
+          id: media.tmdbId,
+          vote_average: media.voteAverage,
+          poster_path: media.posterPath || media.poster_path || null,
+          backdrop_path:
+            (media as any).backdropPath || (media as any).backdrop_path || null,
+          source: "seerr_request",
+          request_status: requestMatch.status,
+          match_score: computedScore,
+        },
+      };
     }
 
     return { verified: false };
@@ -386,53 +532,49 @@ export class SeerrClient {
    */
   async verifyTV(
     title: string,
-    threshold = 0.8
+    threshold = 0.8,
+    forceRefresh = false,
+    fileName?: string
   ): Promise<SeerrVerifyResult<SeerrTVData>> {
-    // First, check user requests
-    const requestMatch = await this.findMatchingRequest(
-      title,
-      undefined,
-      "tv",
-      threshold
-    );
+    let searchResults = await this.searchMedia(title, "tv", forceRefresh);
 
-    if (requestMatch) {
-      const media = requestMatch.media;
-      return {
-        verified: true,
-        data: {
-          name: media.name || title,
-          first_air_date: media.firstAirDate || "",
-          overview: media.overview || "",
-          id: media.tmdbId,
-          vote_average: media.voteAverage,
-          poster_path: media.posterPath || media.poster_path || null,
-          backdrop_path: (media as any).backdropPath || (media as any).backdrop_path || null,
-          source: "seerr_request",
-          request_status: requestMatch.status,
-          match_score: 1.0,
-        },
-      };
+    // If nothing found, try filename-based fallback if available
+    if ((!searchResults || searchResults.length === 0) && fileName) {
+      const { PatternCleaner } = await import("./pattern-cleaner");
+      const cleaner = new PatternCleaner();
+      const cleaned = cleaner.cleanForSearch(fileName);
+      searchResults = await this.searchMedia(cleaned, "tv", forceRefresh);
     }
 
-    // If not in requests, search Seerr's media database
-    const searchResults = await this.searchMedia(title, "tv");
-
-    if (searchResults.length > 0) {
-      let bestMatch: SeerrMediaResult | null = null;
-      let bestScore = 0.0;
-
-      for (const result of searchResults.slice(0, 5)) {
+    if (searchResults && searchResults.length > 0) {
+      // Score ALL results (not just first 5)
+      const scoredResults = searchResults.map((result) => {
         const resultTitle = result.name || "";
+        const resultYear = result.firstAirDate?.substring(0, 4);
         const score = this.fuzzyMatchTitle(title, resultTitle, threshold);
 
-        if (score > bestScore && score >= threshold) {
-          bestScore = score;
-          bestMatch = result;
-        }
-      }
+        return { result, score, resultTitle, resultYear };
+      });
 
-      if (bestMatch) {
+      // Sort by score DESCENDING
+      scoredResults.sort((a, b) => b.score - a.score);
+
+      // Log condensed top 3 candidates
+      const top3 = scoredResults.slice(0, 3).map(
+        (item) => `"${item.resultTitle}" (${item.resultYear || "?"}) ${(item.score * 100).toFixed(0)}%`
+      );
+      console.log(`[Seerr] TV "${title}" -> candidates: ${top3.join(" | ")}`);
+
+      // Select best match above threshold
+      const bestScoredResult = scoredResults[0];
+      if (bestScoredResult && bestScoredResult.score >= threshold) {
+        const bestMatch = bestScoredResult.result;
+        const bestScore = bestScoredResult.score;
+
+        console.log(
+          `[Seerr] TV matched: "${title}" -> "${bestMatch.name}" (${(bestScore * 100).toFixed(0)}%)`
+        );
+
         return {
           verified: true,
           data: {
@@ -442,12 +584,58 @@ export class SeerrClient {
             id: bestMatch.id,
             vote_average: bestMatch.voteAverage,
             poster_path: bestMatch.posterPath || bestMatch.poster_path || null,
-            backdrop_path: (bestMatch as any).backdropPath || (bestMatch as any).backdrop_path || null,
+            backdrop_path:
+              (bestMatch as any).backdropPath ||
+              (bestMatch as any).backdrop_path ||
+              null,
             source: "seerr_search",
             match_score: bestScore,
           },
         };
+      } else {
+        console.log(
+          `[Seerr] TV no match: "${title}" (best: ${(bestScoredResult?.score * 100 || 0).toFixed(0)}% < ${(threshold * 100).toFixed(0)}%)`
+        );
       }
+    }
+
+    // Fallback: check user requests
+    const requestMatch = await this.findMatchingRequest(
+      title,
+      undefined,
+      "tv",
+      threshold,
+      forceRefresh
+    );
+
+    if (requestMatch) {
+      const media = requestMatch.media;
+      const requestTitle = media.name || "";
+      const computedScore = this.fuzzyMatchTitle(
+        title,
+        requestTitle,
+        threshold
+      );
+      console.log(
+        `[Seerr] TV matched (request): "${title}" -> "${requestTitle}" (${(computedScore * 100).toFixed(0)}%)`
+      );
+
+      return {
+        verified: true,
+        data: {
+          name: media.name || title,
+          first_air_date: media.firstAirDate || "",
+          overview: media.overview || "",
+          id: media.tmdbId,
+          vote_average: media.voteAverage,
+          poster_path: media.posterPath || media.poster_path || null,
+          backdrop_path:
+            (media as any).backdropPath || (media as any).backdrop_path || null,
+          source: "seerr_request",
+          request_status: requestMatch.status,
+          match_score: computedScore,
+        },
+      };
     }
 
     return { verified: false };
@@ -520,5 +708,111 @@ export class SeerrClient {
       }));
     }
     return [];
+  }
+
+  /**
+   * Get full movie details from TMDB via Seerr
+   * Returns complete metadata including credits, genres, runtime, etc.
+   */
+  async getMovieDetails(
+    tmdbId: number,
+    forceRefresh = false
+  ): Promise<any | null> {
+    return await this.makeRequest<any>(
+      `movie/${tmdbId}`,
+      undefined,
+      undefined,
+      forceRefresh
+    );
+  }
+
+  /**
+   * Get full TV show details from TMDB via Seerr
+   * Returns complete metadata including credits, genres, runtime, etc.
+   */
+  async getTVDetails(
+    tmdbId: number,
+    forceRefresh = false
+  ): Promise<any | null> {
+    return await this.makeRequest<any>(
+      `tv/${tmdbId}`,
+      undefined,
+      undefined,
+      forceRefresh
+    );
+  }
+
+  /**
+   * Get TV season details from TMDB via Seerr
+   * Returns season name and episode information
+   */
+  async getTVSeasonDetails(
+    tmdbId: number,
+    seasonNumber: number,
+    forceRefresh = false
+  ): Promise<{
+    name: string;
+    seasonNumber: number;
+    overview: string;
+    posterPath: string | null;
+    episodes: Array<{
+      episodeNumber: number;
+      name: string;
+      overview: string;
+      airDate: string | null;
+      stillPath: string | null;
+    }>;
+  } | null> {
+    const data = await this.makeRequest<any>(
+      `tv/${tmdbId}/season/${seasonNumber}`,
+      undefined,
+      86400, // Cache for 24 hours
+      forceRefresh
+    );
+
+    if (!data) {
+      return null;
+    }
+
+    return {
+      name: data.name || `Season ${seasonNumber}`,
+      seasonNumber: data.season_number ?? seasonNumber,
+      overview: data.overview || "",
+      posterPath: data.poster_path || null,
+      episodes: (data.episodes || []).map((ep: any) => ({
+        episodeNumber: ep.episode_number,
+        name: ep.name || `Episode ${ep.episode_number}`,
+        overview: ep.overview || "",
+        airDate: ep.air_date || null,
+        stillPath: ep.still_path || null,
+      })),
+    };
+  }
+
+  /**
+   * Get episode name from TMDB via Seerr
+   * Convenience method that fetches season details and returns just the episode name
+   */
+  async getEpisodeName(
+    tmdbId: number,
+    seasonNumber: number,
+    episodeNumber: number,
+    forceRefresh = false
+  ): Promise<string | null> {
+    const seasonDetails = await this.getTVSeasonDetails(
+      tmdbId,
+      seasonNumber,
+      forceRefresh
+    );
+
+    if (!seasonDetails) {
+      return null;
+    }
+
+    const episode = seasonDetails.episodes.find(
+      (ep) => ep.episodeNumber === episodeNumber
+    );
+
+    return episode?.name || null;
   }
 }

@@ -258,8 +258,17 @@ export async function retryFetch(
 
       // Throw on error responses
       if (!response.ok) {
+        // Try to read the error body for more details
+        let errorDetails = "";
+        try {
+          const errorBody = await response.json();
+          errorDetails = errorBody.message || errorBody.error || JSON.stringify(errorBody);
+        } catch {
+          // Body not JSON or already consumed
+        }
+
         const error = new Error(
-          `HTTP ${response.status}: ${response.statusText}`
+          `HTTP ${response.status}: ${response.statusText}${errorDetails ? ` - ${errorDetails}` : ""}`
         ) as Error & { status: number; response: Response };
         error.status = response.status;
         error.response = response;

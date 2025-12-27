@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import { auth } from "@/src/lib/auth";
 import { db } from "@/src/lib/db";
 import { mediaLibraries, mediaFiles, users } from "@/src/lib/db/schema";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, or, ilike, SQL, asc, desc } from "drizzle-orm";
 import Link from "next/link";
 import {
   ArrowLeftIcon,
@@ -16,11 +16,20 @@ import {
 } from "@radix-ui/react-icons";
 import { ScanButton } from "./scan-button";
 import { RefreshMetadataButton } from "./refresh-metadata-button";
+import { ResetMetadataButton } from "./reset-metadata-button";
+import { DeleteLibraryButton } from "./delete-library-button";
+import { SearchFilter } from "./search-filter";
+import { SortSelector } from "./sort-selector";
+import { ViewModeToggle } from "./view-mode-toggle";
+import { WatchToggle } from "./watch-toggle";
+import { TVHierarchyView } from "./tv-hierarchy-view";
+import { ParseTVButton } from "./parse-tv-button";
+import { LibrarySettingsButton } from "./library-settings-button";
 import { formatFileSize } from "@/src/lib/file-scanner";
 
 interface PageProps {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ page?: string; status?: string; search?: string }>;
+  searchParams: Promise<{ page?: string; status?: string; search?: string; sort?: string; view?: string }>;
 }
 
 export default async function LibraryDetailPage({
@@ -34,7 +43,7 @@ export default async function LibraryDetailPage({
   }
 
   const { id } = await params;
-  const { page = "1", status = "all", search = "" } = await searchParams;
+  const { page = "1", status = "all", search = "", sort = "name-asc", view = "grid" } = await searchParams;
 
   // Fetch user's role
   const userResult = await db
@@ -61,15 +70,28 @@ export default async function LibraryDetailPage({
     notFound();
   }
 
-  // Pagination
+  // Pagination (only for non-TV libraries)
   const pageNum = parseInt(page, 10) || 1;
-  const limit = 50;
-  const offset = (pageNum - 1) * limit;
+  const limit = library.type === "tv" ? 10000 : 50; // TV: load all files
+  const offset = library.type === "tv" ? 0 : (pageNum - 1) * limit;
 
   // Build query for media files
-  const mediaConditions = [eq(mediaFiles.libraryId, id)];
+  const mediaConditions: SQL[] = [eq(mediaFiles.libraryId, id)];
   if (status !== "all") {
     mediaConditions.push(eq(mediaFiles.renameStatus, status));
+  }
+
+  // Add search condition
+  if (search) {
+    const searchPattern = `%${search}%`;
+    mediaConditions.push(
+      or(
+        ilike(mediaFiles.fileName, searchPattern),
+        ilike(mediaFiles.parsedTitle, searchPattern),
+        ilike(mediaFiles.seerrTitle, searchPattern),
+        ilike(mediaFiles.manualTitle, searchPattern)
+      ) as SQL
+    );
   }
 
   // Get total count
@@ -78,16 +100,39 @@ export default async function LibraryDetailPage({
     .from(mediaFiles)
     .where(and(...mediaConditions));
 
+  // Determine sort order
+  const getSortOrder = () => {
+    switch (sort) {
+      case "name-desc":
+        return desc(mediaFiles.fileName);
+      case "year-desc":
+        return desc(mediaFiles.seerrYear);
+      case "year-asc":
+        return asc(mediaFiles.seerrYear);
+      case "date-desc":
+        return desc(mediaFiles.createdAt);
+      case "date-asc":
+        return asc(mediaFiles.createdAt);
+      case "size-desc":
+        return desc(mediaFiles.fileSize);
+      case "size-asc":
+        return asc(mediaFiles.fileSize);
+      case "name-asc":
+      default:
+        return asc(mediaFiles.fileName);
+    }
+  };
+
   // Get media files
   const files = await db
     .select()
     .from(mediaFiles)
     .where(and(...mediaConditions))
-    .orderBy(mediaFiles.fileName)
+    .orderBy(getSortOrder())
     .limit(limit)
     .offset(offset);
 
-  const totalPages = Math.ceil(totalCount / limit);
+  const totalPages = library.type === "tv" ? 1 : Math.ceil(totalCount / limit);
 
   // Get status counts
   const statusCounts = await db
@@ -152,8 +197,9 @@ export default async function LibraryDetailPage({
     <div className="min-h-screen bg-black">
       <main className="mx-auto w-full max-w-6xl px-4 py-8">
         {/* Header */}
-        <div className="flex items-start justify-between mb-6">
-          <div className="flex items-center gap-4">
+        <div className="mb-6">
+          {/* Library Title Row */}
+          <div className="flex items-center gap-4 mb-4">
             <Link
               href="/dashboard"
               className="text-zinc-500 hover:text-zinc-400 transition-colors"
@@ -185,78 +231,162 @@ export default async function LibraryDetailPage({
             </div>
           </div>
 
-          <div className="flex gap-2">
+          {/* Action Buttons Row */}
+          <div className="flex flex-wrap gap-2">
+            <WatchToggle libraryId={id} />
+            <LibrarySettingsButton libraryId={id} />
             <ScanButton libraryId={id} scanStatus={library.scanStatus} />
+            {library.type === "tv" && <ParseTVButton libraryId={id} />}
             <RefreshMetadataButton libraryId={id} fileCount={totalCount} />
+            <ResetMetadataButton libraryId={id} fileCount={totalCount} />
+            <DeleteLibraryButton
+              libraryId={id}
+              libraryName={library.label}
+              fileCount={totalCount}
+            />
           </div>
         </div>
 
-        {/* Status Filters */}
-        <div className="flex gap-2 mb-6 flex-wrap">
-          <Link
-            href={`/libraries/${id}?status=all`}
-            className={`px-3 py-1.5 text-xs rounded border transition-colors ${
-              status === "all"
-                ? "bg-zinc-800 text-zinc-200 border-zinc-700"
-                : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
-            }`}
-          >
-            All ({totalCount})
-          </Link>
-          <Link
-            href={`/libraries/${id}?status=pending`}
-            className={`px-3 py-1.5 text-xs rounded border transition-colors ${
-              status === "pending"
-                ? "bg-zinc-800 text-zinc-200 border-zinc-700"
-                : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
-            }`}
-          >
-            Pending ({counts.pending || 0})
-          </Link>
-          <Link
-            href={`/libraries/${id}?status=ready`}
-            className={`px-3 py-1.5 text-xs rounded border transition-colors ${
-              status === "ready"
-                ? "bg-blue-900/30 text-blue-400 border-blue-900/50"
-                : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
-            }`}
-          >
-            Ready ({counts.ready || 0})
-          </Link>
-          <Link
-            href={`/libraries/${id}?status=renamed`}
-            className={`px-3 py-1.5 text-xs rounded border transition-colors ${
-              status === "renamed"
-                ? "bg-green-900/30 text-green-400 border-green-900/50"
-                : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
-            }`}
-          >
-            Renamed ({counts.renamed || 0})
-          </Link>
-          <Link
-            href={`/libraries/${id}?status=error`}
-            className={`px-3 py-1.5 text-xs rounded border transition-colors ${
-              status === "error"
-                ? "bg-red-900/30 text-red-400 border-red-900/50"
-                : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
-            }`}
-          >
-            Errors ({counts.error || 0})
-          </Link>
+        {/* Search and Filters */}
+        <div className="flex flex-col sm:flex-row gap-4 mb-6">
+          {/* Search, Sort, and View */}
+          <div className="flex gap-2">
+            <SearchFilter libraryId={id} />
+            <SortSelector libraryId={id} />
+            {library.type === "movie" && <ViewModeToggle libraryId={id} />}
+          </div>
+
+          {/* Status Filters */}
+          <div className="flex gap-2 flex-wrap flex-1">
+            <Link
+              href={`/libraries/${id}?status=all&sort=${sort}&view=${view}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
+              className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                status === "all"
+                  ? "bg-zinc-800 text-zinc-200 border-zinc-700"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
+              }`}
+            >
+              All ({totalCount})
+            </Link>
+            <Link
+              href={`/libraries/${id}?status=pending&sort=${sort}&view=${view}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
+              className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                status === "pending"
+                  ? "bg-zinc-800 text-zinc-200 border-zinc-700"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
+              }`}
+            >
+              Pending ({counts.pending || 0})
+            </Link>
+            <Link
+              href={`/libraries/${id}?status=ready&sort=${sort}&view=${view}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
+              className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                status === "ready"
+                  ? "bg-blue-900/30 text-blue-400 border-blue-900/50"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
+              }`}
+            >
+              Ready ({counts.ready || 0})
+            </Link>
+            <Link
+              href={`/libraries/${id}?status=renamed&sort=${sort}&view=${view}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
+              className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                status === "renamed"
+                  ? "bg-green-900/30 text-green-400 border-green-900/50"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
+              }`}
+            >
+              Renamed ({counts.renamed || 0})
+            </Link>
+            <Link
+              href={`/libraries/${id}?status=error&sort=${sort}&view=${view}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
+              className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                status === "error"
+                  ? "bg-red-900/30 text-red-400 border-red-900/50"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
+              }`}
+            >
+              Errors ({counts.error || 0})
+            </Link>
+          </div>
         </div>
 
-        {/* Media Grid */}
+        {/* Media Display */}
         {files.length > 0 ? (
           <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {files.map((file) => (
+            {library.type === "tv" ? (
+              <TVHierarchyView files={files} libraryId={id} />
+            ) : view === "list" ? (
+              /* List View */
+              <div className="space-y-1">
+                {files.map((file) => (
+                  <Link
+                    key={file.id}
+                    href={`/media/${file.id}`}
+                    className="flex items-center gap-3 p-2 bg-zinc-900 rounded border border-zinc-800 hover:border-zinc-700 transition-colors group"
+                  >
+                    {/* Small poster thumbnail */}
+                    <div className="w-8 h-12 rounded overflow-hidden flex-shrink-0 bg-zinc-800">
+                      {file.seerrPosterPath ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={`https://image.tmdb.org/t/p/w92${file.seerrPosterPath}`}
+                          alt={file.parsedTitle || file.fileName}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <VideoIcon className="w-3 h-3 text-zinc-600" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-xs font-medium text-zinc-300 truncate group-hover:text-zinc-200 transition-colors">
+                        {file.manualTitle ||
+                          file.seerrTitle ||
+                          file.parsedTitle ||
+                          file.fileName}
+                      </h4>
+                      <p className="text-[10px] text-zinc-600 truncate">
+                        {file.fileName}
+                      </p>
+                    </div>
+
+                    {/* Year */}
+                    <span className="text-xs text-zinc-500 flex-shrink-0">
+                      {file.manualYear || file.seerrYear || file.parsedYear || "—"}
+                    </span>
+
+                    {/* Size */}
+                    <span className="text-xs text-zinc-600 w-16 text-right flex-shrink-0">
+                      {formatFileSize(file.fileSize || 0)}
+                    </span>
+
+                    {/* Metadata indicator */}
+                    {file.seerrVerified && (
+                      <CheckCircledIcon className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                    )}
+
+                    {/* Status */}
+                    <div className="flex-shrink-0">
+                      {getStatusBadge(file.renameStatus)}
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              /* Grid View */
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {files.map((file) => (
                 <Link
                   key={file.id}
                   href={`/media/${file.id}`}
                   className="bg-zinc-900 rounded border border-zinc-800 overflow-hidden hover:border-zinc-700 transition-colors group"
                 >
                   {/* Poster placeholder */}
-                  <div className="aspect-[2/3] bg-zinc-800 relative flex items-center justify-center">
+                  <div className="aspect-2/3 bg-zinc-800 relative flex items-center justify-center">
                     {file.seerrPosterPath ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -266,11 +396,13 @@ export default async function LibraryDetailPage({
                       />
                     ) : (
                       <div className="text-zinc-600">
-                        {library.type === "movie" ? (
-                          <VideoIcon className="w-8 h-8" />
-                        ) : (
-                          <DesktopIcon className="w-8 h-8" />
-                        )}
+                        <VideoIcon className="w-8 h-8" />
+                      </div>
+                    )}
+                    {/* Metadata status indicator */}
+                    {file.seerrVerified && (
+                      <div className="absolute top-2 right-2 p-1 rounded-full bg-green-500/90 shadow-lg">
+                        <CheckCircledIcon className="w-3 h-3 text-white" />
                       </div>
                     )}
                   </div>
@@ -285,12 +417,9 @@ export default async function LibraryDetailPage({
                     </h4>
                     {(file.manualYear ||
                       file.seerrYear ||
-                      file.parsedYear ||
-                      file.parsedSeason) && (
+                      file.parsedYear) && (
                       <p className="text-[10px] text-zinc-500 mt-0.5">
-                        {library.type === "movie"
-                          ? file.manualYear || file.seerrYear || file.parsedYear
-                          : `S${String(file.parsedSeason || 1).padStart(2, "0")}E${String(file.parsedEpisode || 1).padStart(2, "0")}`}
+                        {file.manualYear || file.seerrYear || file.parsedYear}
                       </p>
                     )}
                     <div className="flex items-center justify-between mt-2">
@@ -302,14 +431,15 @@ export default async function LibraryDetailPage({
                   </div>
                 </Link>
               ))}
-            </div>
+              </div>
+            )}
 
             {/* Pagination */}
             {totalPages > 1 && (
               <div className="flex items-center justify-center gap-2 mt-8">
                 {pageNum > 1 && (
                   <Link
-                    href={`/libraries/${id}?page=${pageNum - 1}&status=${status}`}
+                    href={`/libraries/${id}?page=${pageNum - 1}&status=${status}&sort=${sort}&view=${view}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
                     className="px-3 py-1.5 text-xs rounded border border-zinc-800 text-zinc-400 hover:text-zinc-300 hover:border-zinc-700 transition-colors"
                   >
                     Previous
@@ -320,7 +450,7 @@ export default async function LibraryDetailPage({
                 </span>
                 {pageNum < totalPages && (
                   <Link
-                    href={`/libraries/${id}?page=${pageNum + 1}&status=${status}`}
+                    href={`/libraries/${id}?page=${pageNum + 1}&status=${status}&sort=${sort}&view=${view}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
                     className="px-3 py-1.5 text-xs rounded border border-zinc-800 text-zinc-400 hover:text-zinc-300 hover:border-zinc-700 transition-colors"
                   >
                     Next
@@ -339,7 +469,9 @@ export default async function LibraryDetailPage({
               No media files found
             </h2>
             <p className="text-xs text-zinc-500 max-w-sm">
-              {status !== "all"
+              {search
+                ? `No files matching "${search}".`
+                : status !== "all"
                 ? `No files with "${status}" status. Try a different filter.`
                 : "Scan this library to discover media files."}
             </p>

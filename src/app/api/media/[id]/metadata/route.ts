@@ -5,6 +5,14 @@ import { db } from "@/src/lib/db";
 import { mediaFiles, seerrSettings, users } from "@/src/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { SeerrClient } from "@/src/lib/seerr-client";
+import {
+  saveMetadataFile,
+  downloadMediaImages,
+  createMovieMetadata,
+  createTVMetadata,
+  deleteMetadataFiles,
+} from "@/src/lib/metadata-file";
+import { seerrCache } from "@/src/lib/cache";
 
 interface Params {
   id: string;
@@ -31,7 +39,10 @@ export async function POST(
       .limit(1);
 
     if (!mediaFile) {
-      return NextResponse.json({ error: "Media file not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Media file not found" },
+        { status: 404 }
+      );
     }
 
     // Get Seerr settings
@@ -50,36 +61,75 @@ export async function POST(
 
     if (settings.connectionStatus !== "connected") {
       return NextResponse.json(
-        { error: "Seerr is not connected. Please test connection in settings." },
+        {
+          error: "Seerr is not connected. Please test connection in settings.",
+        },
         { status: 400 }
       );
     }
 
     // Get library type to determine if movie or TV
     const libraryType =
-      (mediaFile.parsedSeason && mediaFile.parsedEpisode) ? "tv" : "movie";
+      mediaFile.parsedSeason && mediaFile.parsedEpisode ? "tv" : "movie";
+
+    // Read optional body (supports { hard: true })
+    let body: any = {};
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
+
+    const hard = Boolean(body?.hard);
+
+    // If hard refresh requested, clear relevant Seerr cache
+    if (hard) {
+      try {
+        await seerrCache.clear("search*");
+        await seerrCache.del("user_requests:all");
+        console.log(
+          "[Seerr] Hard refresh requested - cleared search and user requests cache"
+        );
+      } catch (e) {
+        console.warn("[Seerr] Failed to clear cache for hard refresh:", e);
+      }
+    }
 
     // Create Seerr client and fetch metadata
     const client = new SeerrClient(settings.apiKey, settings.apiUrl);
 
+    // Derive a search title from the file/folder name (do NOT use stored metadata)
+    const pathModule = await import("path");
+    const { PatternCleaner } = await import("@/src/lib/pattern-cleaner");
+    const fileBase =
+      mediaFile.fileName || pathModule.basename(mediaFile.filePath);
+    const folderName = pathModule.basename(
+      pathModule.dirname(mediaFile.filePath)
+    );
+    const rawSearchTitle =
+      libraryType === "tv" && folderName
+        ? folderName
+        : fileBase.replace(pathModule.extname(fileBase), "");
+    const cleaner = new PatternCleaner();
+    const searchTitle = cleaner.cleanForSearch(rawSearchTitle);
+
     if (libraryType === "movie") {
       const result = await client.verifyMovie(
-        mediaFile.parsedTitle || "",
+        searchTitle || mediaFile.parsedTitle || "",
         mediaFile.parsedYear || undefined,
-        0.8
+        0.8,
+        hard,
+        mediaFile.fileName
       );
 
       if (result.verified && result.data) {
-        console.log("Seerr movie metadata:", JSON.stringify(result.data, null, 2));
-
         // Fetch cast information from TMDB if we have a TMDB ID
         let cast = null;
         if (result.data.id) {
           try {
             cast = await client.getMovieCredits(result.data.id);
-            console.log(`Fetched ${cast.length} cast members`);
-          } catch (error) {
-            console.error("Failed to fetch cast:", error);
+          } catch {
+            // Cast fetch failed, continue without cast
           }
         }
 
@@ -101,6 +151,47 @@ export async function POST(
           })
           .where(eq(mediaFiles.id, id))
           .returning();
+
+        // If hard refresh, remove existing metadata files before saving new ones
+        if (hard) {
+          try {
+            await deleteMetadataFiles(mediaFile.filePath);
+          } catch (e) {
+            console.warn(
+              `[Metadata] Failed to delete existing metadata files for hard refresh ${mediaFile.filePath}:`,
+              e
+            );
+          }
+        }
+
+        // Save metadata file alongside the media file
+        try {
+          const metadata = createMovieMetadata(
+            result.data,
+            result.data.match_score
+          );
+          if (cast) {
+            metadata.cast = cast;
+          }
+          await saveMetadataFile(mediaFile.filePath, metadata);
+
+          // Download images
+          const images = await downloadMediaImages(
+            mediaFile.filePath,
+            result.data.poster_path,
+            result.data.backdrop_path
+          );
+          if (images.poster || images.backdrop) {
+            if (images.poster) metadata.posterPath = images.poster;
+            if (images.backdrop) metadata.backdropPath = images.backdrop;
+            await saveMetadataFile(mediaFile.filePath, metadata);
+          }
+        } catch (metadataError) {
+          console.error(
+            `[Metadata] Failed to save metadata for ${mediaFile.filePath}:`,
+            metadataError
+          );
+        }
 
         return NextResponse.json({
           success: true,
@@ -125,21 +216,20 @@ export async function POST(
     } else {
       // TV show
       const result = await client.verifyTV(
-        mediaFile.parsedTitle || "",
-        0.8
+        searchTitle || mediaFile.parsedTitle || "",
+        0.8,
+        hard,
+        mediaFile.fileName
       );
 
       if (result.verified && result.data) {
-        console.log("Seerr TV metadata:", JSON.stringify(result.data, null, 2));
-
         // Fetch cast information from TMDB if we have a TMDB ID
         let cast = null;
         if (result.data.id) {
           try {
             cast = await client.getTVCredits(result.data.id);
-            console.log(`Fetched ${cast.length} cast members`);
-          } catch (error) {
-            console.error("Failed to fetch cast:", error);
+          } catch {
+            // Cast fetch failed, continue without cast
           }
         }
 
@@ -161,6 +251,49 @@ export async function POST(
           })
           .where(eq(mediaFiles.id, id))
           .returning();
+
+        // If hard refresh, remove existing metadata files before saving new ones
+        if (hard) {
+          try {
+            await deleteMetadataFiles(mediaFile.filePath);
+          } catch (e) {
+            console.warn(
+              `[Metadata] Failed to delete existing metadata files for hard refresh ${mediaFile.filePath}:`,
+              e
+            );
+          }
+        }
+
+        // Save metadata file alongside the media file
+        try {
+          const metadata = createTVMetadata(
+            result.data,
+            mediaFile.parsedSeason ?? undefined,
+            mediaFile.parsedEpisode ?? undefined,
+            result.data.match_score
+          );
+          if (cast) {
+            metadata.cast = cast;
+          }
+          await saveMetadataFile(mediaFile.filePath, metadata);
+
+          // Download images
+          const images = await downloadMediaImages(
+            mediaFile.filePath,
+            result.data.poster_path,
+            result.data.backdrop_path
+          );
+          if (images.poster || images.backdrop) {
+            if (images.poster) metadata.posterPath = images.poster;
+            if (images.backdrop) metadata.backdropPath = images.backdrop;
+            await saveMetadataFile(mediaFile.filePath, metadata);
+          }
+        } catch (metadataError) {
+          console.error(
+            `[Metadata] Failed to save metadata for ${mediaFile.filePath}:`,
+            metadataError
+          );
+        }
 
         return NextResponse.json({
           success: true,
@@ -188,7 +321,8 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to fetch metadata",
+        error:
+          error instanceof Error ? error.message : "Failed to fetch metadata",
       },
       { status: 500 }
     );

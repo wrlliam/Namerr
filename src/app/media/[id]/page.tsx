@@ -89,12 +89,8 @@ export default function MediaDetailPage({
         setMediaFile(data.mediaFile);
         setManualTitle(data.mediaFile.manualTitle || "");
         setManualYear(data.mediaFile.manualYear || "");
-        setManualSeason(
-          data.mediaFile.manualSeason?.toString() || ""
-        );
-        setManualEpisode(
-          data.mediaFile.manualEpisode?.toString() || ""
-        );
+        setManualSeason(data.mediaFile.manualSeason?.toString() || "");
+        setManualEpisode(data.mediaFile.manualEpisode?.toString() || "");
       } else {
         setError("Failed to load media file");
       }
@@ -124,7 +120,9 @@ export default function MediaDetailPage({
       });
 
       if (response.ok) {
-        setSuccess("Metadata saved successfully. File marked as ready for renaming.");
+        setSuccess(
+          "Metadata saved successfully. File marked as ready for renaming."
+        );
         fetchMediaFile();
       } else {
         const data = await response.json();
@@ -151,7 +149,9 @@ export default function MediaDetailPage({
 
       if (response.ok && data.verified) {
         setSuccess(
-          `Metadata fetched from Seerr! Match score: ${data.metadata.matchScore?.toFixed(2) || "N/A"}`
+          `Metadata fetched from Seerr! Match score: ${
+            data.metadata.matchScore?.toFixed(2) || "N/A"
+          }`
         );
         fetchMediaFile();
       } else {
@@ -217,7 +217,10 @@ export default function MediaDetailPage({
       <div className="flex items-center justify-center min-h-screen bg-black">
         <div className="text-center">
           <h1 className="text-xl text-zinc-300 mb-2">Media file not found</h1>
-          <Link href="/dashboard" className="text-xs text-blue-400 hover:underline">
+          <Link
+            href="/dashboard"
+            className="text-xs text-blue-400 hover:underline"
+          >
             Return to Dashboard
           </Link>
         </div>
@@ -245,7 +248,10 @@ export default function MediaDetailPage({
             alt=""
             className="w-full h-full object-cover opacity-40"
             onError={(e) => {
-              console.error("Failed to load backdrop:", mediaFile.seerrBackdropPath);
+              console.error(
+                "Failed to load backdrop:",
+                mediaFile.seerrBackdropPath
+              );
               e.currentTarget.parentElement?.remove();
             }}
           />
@@ -262,8 +268,10 @@ export default function MediaDetailPage({
             <ArrowLeftIcon className="w-4 h-4" />
           </Link>
           <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <h1 className="text-xl font-medium text-zinc-300">{finalTitle}</h1>
+            <div className="flex items-center gap-3 mb-1">
+              <h1 className="text-xl font-medium text-zinc-300">
+                {finalTitle}
+              </h1>
               {finalYear && (
                 <span className="text-sm text-zinc-500">({finalYear})</span>
               )}
@@ -280,7 +288,7 @@ export default function MediaDetailPage({
           <div className="space-y-6">
             {/* Poster */}
             {mediaFile.seerrPosterPath ? (
-              <div className="aspect-[2/3] bg-zinc-900 rounded border border-zinc-800 overflow-hidden">
+              <div className="aspect-2/3 bg-zinc-900 rounded border border-zinc-800 overflow-hidden">
                 <img
                   src={`https://image.tmdb.org/t/p/w500${mediaFile.seerrPosterPath}`}
                   alt={finalTitle}
@@ -290,22 +298,30 @@ export default function MediaDetailPage({
                       posterPath: mediaFile.seerrPosterPath,
                       fullUrl: `https://image.tmdb.org/t/p/w500${mediaFile.seerrPosterPath}`,
                     });
-                    e.currentTarget.style.display = 'none';
+                    e.currentTarget.style.display = "none";
                     const parent = e.currentTarget.parentElement;
                     if (parent) {
-                      parent.innerHTML = '<div class="flex items-center justify-center h-full"><span class="text-xs text-red-400">Failed to load poster</span></div>';
+                      parent.innerHTML =
+                        '<div class="flex items-center justify-center h-full"><span class="text-xs text-red-400">Failed to load poster</span></div>';
                     }
                   }}
                   onLoad={() => {
-                    console.log("Poster loaded successfully:", mediaFile.seerrPosterPath);
+                    console.log(
+                      "Poster loaded successfully:",
+                      mediaFile.seerrPosterPath
+                    );
                   }}
                 />
               </div>
             ) : (
-              <div className="aspect-[2/3] bg-zinc-900 rounded border border-zinc-800 flex items-center justify-center">
+              <div className="aspect-2/3 bg-zinc-900 rounded border border-zinc-800 flex items-center justify-center">
                 <span className="text-xs text-zinc-600">
                   No poster available
-                  {mediaFile.seerrVerified && <span className="block text-[10px] mt-1">(Seerr verified but no poster)</span>}
+                  {mediaFile.seerrVerified && (
+                    <span className="block text-[10px] mt-1">
+                      (Seerr verified but no poster)
+                    </span>
+                  )}
                 </span>
               </div>
             )}
@@ -316,15 +332,19 @@ export default function MediaDetailPage({
                 <h3 className="text-sm font-medium text-zinc-300 mb-3">
                   Seerr Metadata
                 </h3>
-                <div className="space-y-2 text-xs">
+                <div className="space-y-3 text-xs">
                   <div>
                     <span className="text-zinc-500">Title:</span>
-                    <span className="text-zinc-300 ml-2">{mediaFile.seerrTitle}</span>
+                    <span className="text-zinc-300 ml-2">
+                      {mediaFile.seerrTitle}
+                    </span>
                   </div>
                   {mediaFile.seerrYear && (
                     <div>
                       <span className="text-zinc-500">Year:</span>
-                      <span className="text-zinc-300 ml-2">{mediaFile.seerrYear}</span>
+                      <span className="text-zinc-300 ml-2">
+                        {mediaFile.seerrYear}
+                      </span>
                     </div>
                   )}
                   {mediaFile.seerrVoteAverage && (
@@ -339,20 +359,27 @@ export default function MediaDetailPage({
                   {mediaFile.seerrTmdbId && (
                     <div>
                       <span className="text-zinc-500">TMDB ID:</span>
-                      <span className="text-zinc-300 ml-2">{mediaFile.seerrTmdbId}</span>
+                      <span className="text-zinc-300 ml-2">
+                        {mediaFile.seerrTmdbId}
+                      </span>
                     </div>
                   )}
                   {mediaFile.seerrMatchScore && (
                     <div>
                       <span className="text-zinc-500">Match Score:</span>
                       <span className="text-zinc-300 ml-2">
-                        {(parseFloat(mediaFile.seerrMatchScore) * 100).toFixed(0)}%
+                        {(parseFloat(mediaFile.seerrMatchScore) * 100).toFixed(
+                          0
+                        )}
+                        %
                       </span>
                     </div>
                   )}
                   {mediaFile.seerrOverview && (
                     <div>
-                      <span className="text-zinc-500 block mb-1">Overview:</span>
+                      <span className="text-zinc-500 block mb-1">
+                        Overview:
+                      </span>
                       <p className="text-zinc-400 text-[10px] leading-relaxed">
                         {mediaFile.seerrOverview}
                       </p>
@@ -365,9 +392,7 @@ export default function MediaDetailPage({
             {/* Cast */}
             {mediaFile.seerrCast && mediaFile.seerrCast.length > 0 && (
               <div className="bg-zinc-900 rounded border border-zinc-800 p-4">
-                <h3 className="text-sm font-medium text-zinc-300 mb-3">
-                  Cast
-                </h3>
+                <h3 className="text-sm font-medium text-zinc-300 mb-3">Cast</h3>
                 <div className="grid grid-cols-2 gap-3">
                   {mediaFile.seerrCast.map((person, index) => (
                     <div key={index} className="flex gap-2">
@@ -377,12 +402,14 @@ export default function MediaDetailPage({
                           alt={person.name}
                           className="w-12 h-12 rounded object-cover bg-zinc-800"
                           onError={(e) => {
-                            e.currentTarget.style.display = 'none';
+                            e.currentTarget.style.display = "none";
                           }}
                         />
                       ) : (
                         <div className="w-12 h-12 rounded bg-zinc-800 flex items-center justify-center">
-                          <span className="text-[10px] text-zinc-600">No photo</span>
+                          <span className="text-[10px] text-zinc-600">
+                            No photo
+                          </span>
                         </div>
                       )}
                       <div className="flex-1 min-w-0">
@@ -400,9 +427,61 @@ export default function MediaDetailPage({
             )}
 
             {/* Fetch Metadata Button */}
-            {!mediaFile.seerrVerified && (
+            <div className="flex flex-col gap-2">
+              {!mediaFile.seerrVerified && (
+                <Button
+                  onClick={handleFetchMetadata}
+                  disabled={isFetchingMetadata}
+                  variant="outline"
+                  className="w-full h-9 text-xs"
+                >
+                  {isFetchingMetadata ? (
+                    <>
+                      <UpdateIcon className="w-3 h-3 mr-2 animate-spin" />
+                      Fetching...
+                    </>
+                  ) : (
+                    "Fetch Metadata from Seerr"
+                  )}
+                </Button>
+              )}
+
+              {/* Hard refresh always available */}
               <Button
-                onClick={handleFetchMetadata}
+                onClick={async () => {
+                  setError("");
+                  setSuccess("");
+                  setIsFetchingMetadata(true);
+                  try {
+                    const response = await fetch(
+                      `/api/media/${paramId}/metadata`,
+                      {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ hard: true }),
+                      }
+                    );
+
+                    const data = await response.json();
+
+                    if (response.ok && data.verified) {
+                      setSuccess(
+                        `Hard metadata refresh complete. Match score: ${
+                          data.metadata.matchScore?.toFixed(2) || "N/A"
+                        }`
+                      );
+                      fetchMediaFile();
+                    } else {
+                      setError(
+                        data.error || "Failed to fetch metadata from Seerr"
+                      );
+                    }
+                  } catch (e) {
+                    setError("An error occurred while fetching metadata");
+                  } finally {
+                    setIsFetchingMetadata(false);
+                  }
+                }}
                 disabled={isFetchingMetadata}
                 variant="outline"
                 className="w-full h-9 text-xs"
@@ -413,10 +492,10 @@ export default function MediaDetailPage({
                     Fetching...
                   </>
                 ) : (
-                  "Fetch Metadata from Seerr"
+                  "Hard Refresh Metadata (overwrite)"
                 )}
               </Button>
-            )}
+            </div>
           </div>
 
           {/* Right Column: File Info & Manual Editor */}
@@ -429,15 +508,21 @@ export default function MediaDetailPage({
               <div className="space-y-2 text-xs">
                 <div className="grid grid-cols-2">
                   <span className="text-zinc-500">File Name:</span>
-                  <span className="text-zinc-300 font-mono">{mediaFile.fileName}</span>
+                  <span className="text-zinc-300 font-mono">
+                    {mediaFile.fileName}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2">
                   <span className="text-zinc-500">Size:</span>
-                  <span className="text-zinc-300">{formatFileSize(mediaFile.fileSize)}</span>
+                  <span className="text-zinc-300">
+                    {formatFileSize(mediaFile.fileSize)}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2">
                   <span className="text-zinc-500">Extension:</span>
-                  <span className="text-zinc-300">{mediaFile.fileExtension}</span>
+                  <span className="text-zinc-300">
+                    {mediaFile.fileExtension}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2">
                   <span className="text-zinc-500">Path:</span>
@@ -456,21 +541,29 @@ export default function MediaDetailPage({
               <div className="space-y-2 text-xs">
                 <div className="grid grid-cols-2">
                   <span className="text-zinc-500">Title:</span>
-                  <span className="text-zinc-300">{mediaFile.parsedTitle || "-"}</span>
+                  <span className="text-zinc-300">
+                    {mediaFile.parsedTitle || "-"}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2">
                   <span className="text-zinc-500">Year:</span>
-                  <span className="text-zinc-300">{mediaFile.parsedYear || "-"}</span>
+                  <span className="text-zinc-300">
+                    {mediaFile.parsedYear || "-"}
+                  </span>
                 </div>
                 {isTV && (
                   <>
                     <div className="grid grid-cols-2">
                       <span className="text-zinc-500">Season:</span>
-                      <span className="text-zinc-300">{mediaFile.parsedSeason || "-"}</span>
+                      <span className="text-zinc-300">
+                        {mediaFile.parsedSeason || "-"}
+                      </span>
                     </div>
                     <div className="grid grid-cols-2">
                       <span className="text-zinc-500">Episode:</span>
-                      <span className="text-zinc-300">{mediaFile.parsedEpisode || "-"}</span>
+                      <span className="text-zinc-300">
+                        {mediaFile.parsedEpisode || "-"}
+                      </span>
                     </div>
                   </>
                 )}
@@ -489,7 +582,11 @@ export default function MediaDetailPage({
                     type="text"
                     value={manualTitle}
                     onChange={(e) => setManualTitle(e.target.value)}
-                    placeholder={mediaFile.seerrTitle || mediaFile.parsedTitle || "Enter title"}
+                    placeholder={
+                      mediaFile.seerrTitle ||
+                      mediaFile.parsedTitle ||
+                      "Enter title"
+                    }
                     className="mt-1.5 bg-zinc-900 border-zinc-800 text-zinc-300 text-xs"
                   />
                 </div>
@@ -500,7 +597,9 @@ export default function MediaDetailPage({
                     type="text"
                     value={manualYear}
                     onChange={(e) => setManualYear(e.target.value)}
-                    placeholder={mediaFile.seerrYear || mediaFile.parsedYear || "YYYY"}
+                    placeholder={
+                      mediaFile.seerrYear || mediaFile.parsedYear || "YYYY"
+                    }
                     className="mt-1.5 bg-zinc-900 border-zinc-800 text-zinc-300 text-xs"
                   />
                 </div>
@@ -531,8 +630,8 @@ export default function MediaDetailPage({
                 )}
 
                 <p className="text-[10px] text-zinc-600">
-                  Manual metadata takes priority over Seerr and parsed data. Leave fields
-                  empty to use automatic values.
+                  Manual metadata takes priority over Seerr and parsed data.
+                  Leave fields empty to use automatic values.
                 </p>
 
                 {/* Error Message */}

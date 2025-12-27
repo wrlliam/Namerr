@@ -74,4 +74,22 @@ export class PatternCleaner {
 
     return cleaned;
   }
+
+  /**
+   * Clean filename for Seerr API search - also strips year in parentheses
+   * since year is extracted and used separately for matching
+   */
+  cleanForSearch(name: string): string {
+    // First apply normal cleaning
+    let cleaned = this.clean(name);
+
+    // Also strip years in parentheses (e.g., "(2002)") since Seerr API
+    // doesn't accept parentheses in search queries
+    cleaned = cleaned.replace(/\s*\((?:19|20)\d{2}\)\s*/g, " ");
+
+    // Clean up multiple spaces and trim
+    cleaned = cleaned.replace(/\s+/g, " ").trim();
+
+    return cleaned;
+  }
 }

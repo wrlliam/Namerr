@@ -52,10 +52,44 @@ export interface ScanResult {
   errors: string[];
 }
 
+export interface ScanOptions {
+  depth?: number; // Max directory depth to scan (default: 2 for movies, 3 for TV)
+}
+
+/**
+ * Build glob patterns for a specific depth
+ * Depth 1: /Library/file.mkv
+ * Depth 2: /Library/Folder/file.mkv
+ * Depth 3: /Library/Show/Season/file.mkv
+ */
+function buildDepthPatterns(extensions: string[], maxDepth: number): string[] {
+  const patterns: string[] = [];
+  const extGlob = `{${extensions.join(",")}}`;
+
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    if (depth === 1) {
+      patterns.push(`*.${extGlob}`);
+    } else {
+      // Build pattern like */ or */*/ for each depth level
+      const prefix = Array(depth - 1).fill("*").join("/");
+      patterns.push(`${prefix}/*.${extGlob}`);
+    }
+  }
+
+  return patterns;
+}
+
 /**
  * Scan a directory for video and subtitle files
+ * @param libraryPath - Path to the library directory
+ * @param options - Scan options including depth (default: 2)
  */
-export async function scanLibraryPath(libraryPath: string): Promise<ScanResult> {
+export async function scanLibraryPath(
+  libraryPath: string,
+  options: ScanOptions = {}
+): Promise<ScanResult> {
+  const { depth = 2 } = options;
+
   const result: ScanResult = {
     videoFiles: [],
     subtitleFiles: [],
@@ -67,12 +101,12 @@ export async function scanLibraryPath(libraryPath: string): Promise<ScanResult> 
     // Verify the path exists and is accessible
     await fs.access(libraryPath, fs.constants.R_OK);
 
-    // Build glob pattern for video files
-    const videoPattern = `**/*.{${VIDEO_EXTENSIONS.join(",")}}`;
-    const subtitlePattern = `**/*.{${SUBTITLE_EXTENSIONS.join(",")}}`;
+    // Build glob patterns based on depth
+    const videoPatterns = buildDepthPatterns(VIDEO_EXTENSIONS, depth);
+    const subtitlePatterns = buildDepthPatterns(SUBTITLE_EXTENSIONS, depth);
 
     // Scan for video files
-    const videoFiles = await fg(videoPattern, {
+    const videoFiles = await fg(videoPatterns, {
       cwd: libraryPath,
       absolute: true,
       ignore: IGNORE_PATTERNS,
@@ -82,7 +116,7 @@ export async function scanLibraryPath(libraryPath: string): Promise<ScanResult> 
     });
 
     // Scan for subtitle files
-    const subtitleFiles = await fg(subtitlePattern, {
+    const subtitleFiles = await fg(subtitlePatterns, {
       cwd: libraryPath,
       absolute: true,
       ignore: IGNORE_PATTERNS,

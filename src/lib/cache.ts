@@ -15,6 +15,12 @@ export interface CacheOptions {
    * Cache key prefix
    */
   prefix?: string;
+
+  /**
+   * Force use of in-memory cache even if Redis is available
+   * Useful for SSH workers to avoid Redis dependency
+   */
+  forceMemory?: boolean;
 }
 
 export interface CacheBackend {
@@ -31,6 +37,7 @@ export interface CacheBackend {
 class RedisCache implements CacheBackend {
   private client: Redis;
   private prefix: string;
+  private isConnected: boolean = false;
 
   constructor(redisUrl?: string, prefix: string = "namerr:") {
     this.prefix = prefix;
@@ -43,24 +50,55 @@ class RedisCache implements CacheBackend {
           return delay;
         },
         lazyConnect: true,
+        connectTimeout: 5000, // 5 second timeout
       });
 
       // Handle connection errors gracefully
       this.client.on("error", (err) => {
         console.error("[Redis Cache] Connection error:", err.message);
+        this.isConnected = false;
       });
 
       this.client.on("connect", () => {
         console.log("[Redis Cache] Connected successfully");
+        this.isConnected = true;
+      });
+
+      this.client.on("ready", () => {
+        this.isConnected = true;
+      });
+
+      this.client.on("close", () => {
+        this.isConnected = false;
       });
 
       // Connect asynchronously
       this.client.connect().catch((err) => {
         console.error("[Redis Cache] Failed to connect:", err.message);
+        this.isConnected = false;
       });
     } else {
       // No Redis URL provided, create a disconnected client
       this.client = new Redis({ lazyConnect: true });
+      this.isConnected = false;
+    }
+  }
+
+  /**
+   * Check if Redis is connected
+   */
+  async checkConnection(): Promise<boolean> {
+    try {
+      if (this.client.status === "ready") {
+        await this.client.ping();
+        this.isConnected = true;
+        return true;
+      }
+      this.isConnected = false;
+      return false;
+    } catch (error) {
+      this.isConnected = false;
+      return false;
     }
   }
 
@@ -238,16 +276,33 @@ class MemoryCache implements CacheBackend {
 export class Cache {
   private backend: CacheBackend;
   private defaultTTL: number;
+  private fallbackBackend?: CacheBackend;
+  private usingFallback: boolean = false;
 
   constructor(options: CacheOptions = {}) {
     this.defaultTTL = options.ttl || 3600; // Default 1 hour
+
+    // Force memory cache if requested (for SSH workers)
+    // Can be set via options.forceMemory or FORCE_MEMORY_CACHE=true environment variable
+    if (options.forceMemory || process.env.FORCE_MEMORY_CACHE === "true") {
+      console.log("[Cache] Using in-memory backend (forced via config or environment)");
+      this.backend = new MemoryCache(options.prefix);
+      return;
+    }
 
     // Try to use Redis if REDIS_URL is set
     const redisUrl = process.env.REDIS_URL;
 
     if (redisUrl) {
-      console.log("[Cache] Using Redis backend");
-      this.backend = new RedisCache(redisUrl, options.prefix);
+      console.log("[Cache] Attempting to connect to Redis...");
+      const redisBackend = new RedisCache(redisUrl, options.prefix);
+      this.backend = redisBackend;
+
+      // Create in-memory fallback
+      this.fallbackBackend = new MemoryCache(options.prefix);
+
+      // Test Redis connection asynchronously
+      this.testRedisConnection(redisBackend, options.prefix);
     } else {
       console.log("[Cache] Using in-memory backend (Redis not configured)");
       this.backend = new MemoryCache(options.prefix);
@@ -255,38 +310,118 @@ export class Cache {
   }
 
   /**
+   * Test Redis connection and fall back to memory if it fails
+   */
+  private async testRedisConnection(redisBackend: RedisCache, prefix?: string) {
+    try {
+      // Give Redis 3 seconds to connect
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      const isConnected = await redisBackend.checkConnection();
+
+      if (!isConnected) {
+        console.warn("[Cache] Redis connection failed, falling back to in-memory cache");
+        this.backend = this.fallbackBackend!;
+        this.usingFallback = true;
+      } else {
+        console.log("[Cache] Redis connection verified");
+      }
+    } catch (error) {
+      console.error("[Cache] Error testing Redis connection:", error);
+      console.warn("[Cache] Falling back to in-memory cache");
+      this.backend = this.fallbackBackend!;
+      this.usingFallback = true;
+    }
+  }
+
+  /**
    * Get value from cache
    */
   async get<T>(key: string): Promise<T | null> {
-    return this.backend.get<T>(key);
+    try {
+      return await this.backend.get<T>(key);
+    } catch (error) {
+      if (this.fallbackBackend && !this.usingFallback) {
+        console.warn("[Cache] Redis get failed, using fallback");
+        return await this.fallbackBackend.get<T>(key);
+      }
+      console.error("[Cache] Get failed:", error);
+      return null;
+    }
   }
 
   /**
    * Set value in cache with optional TTL
    */
   async set<T>(key: string, value: T, ttl?: number): Promise<void> {
-    await this.backend.set(key, value, ttl ?? this.defaultTTL);
+    try {
+      await this.backend.set(key, value, ttl ?? this.defaultTTL);
+      // Also set in fallback if we have one
+      if (this.fallbackBackend && !this.usingFallback) {
+        await this.fallbackBackend.set(key, value, ttl ?? this.defaultTTL);
+      }
+    } catch (error) {
+      if (this.fallbackBackend && !this.usingFallback) {
+        console.warn("[Cache] Redis set failed, using fallback");
+        await this.fallbackBackend.set(key, value, ttl ?? this.defaultTTL);
+      } else {
+        console.error("[Cache] Set failed:", error);
+      }
+    }
   }
 
   /**
    * Delete value from cache
    */
   async del(key: string): Promise<void> {
-    await this.backend.del(key);
+    try {
+      await this.backend.del(key);
+      if (this.fallbackBackend && !this.usingFallback) {
+        await this.fallbackBackend.del(key);
+      }
+    } catch (error) {
+      if (this.fallbackBackend && !this.usingFallback) {
+        console.warn("[Cache] Redis del failed, using fallback");
+        await this.fallbackBackend.del(key);
+      } else {
+        console.error("[Cache] Del failed:", error);
+      }
+    }
   }
 
   /**
    * Clear cache (all keys or by pattern)
    */
   async clear(pattern?: string): Promise<void> {
-    await this.backend.clear(pattern);
+    try {
+      await this.backend.clear(pattern);
+      if (this.fallbackBackend && !this.usingFallback) {
+        await this.fallbackBackend.clear(pattern);
+      }
+    } catch (error) {
+      if (this.fallbackBackend && !this.usingFallback) {
+        console.warn("[Cache] Redis clear failed, using fallback");
+        await this.fallbackBackend.clear(pattern);
+      } else {
+        console.error("[Cache] Clear failed:", error);
+      }
+    }
   }
 
   /**
    * Check if key exists in cache
    */
   async has(key: string): Promise<boolean> {
-    return this.backend.has(key);
+    try {
+      return await this.backend.has(key);
+    } catch (error) {
+      if (this.fallbackBackend && !this.usingFallback) {
+        console.warn("[Cache] Redis has failed, using fallback");
+        return await this.fallbackBackend.has(key);
+      }
+      console.error("[Cache] Has failed:", error);
+      return false;
+    }
   }
 
   /**
@@ -330,12 +465,37 @@ export class Cache {
    * Get cache statistics
    */
   async getStats() {
+    const stats: any = { usingFallback: this.usingFallback };
+
     if (this.backend instanceof RedisCache) {
-      return this.backend.getStats();
+      stats.backend = "redis";
+      stats.redis = await this.backend.getStats();
     } else if (this.backend instanceof MemoryCache) {
-      return this.backend.getStats();
+      stats.backend = "memory";
+      stats.memory = this.backend.getStats();
     }
-    return { connected: false, totalKeys: 0 };
+
+    if (this.fallbackBackend instanceof MemoryCache) {
+      stats.fallback = this.fallbackBackend.getStats();
+    }
+
+    return stats;
+  }
+
+  /**
+   * Get current backend type
+   */
+  getBackendType(): string {
+    if (this.usingFallback) {
+      return "memory (fallback)";
+    }
+    if (this.backend instanceof RedisCache) {
+      return "redis";
+    }
+    if (this.backend instanceof MemoryCache) {
+      return "memory";
+    }
+    return "unknown";
   }
 }
 

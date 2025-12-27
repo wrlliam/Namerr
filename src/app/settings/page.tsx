@@ -6,8 +6,17 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeftIcon, GearIcon, RocketIcon, PersonIcon } from "@radix-ui/react-icons";
+import {
+  ArrowLeftIcon,
+  GearIcon,
+  RocketIcon,
+  PersonIcon,
+  MagicWandIcon,
+  MoonIcon,
+  MixerHorizontalIcon,
+} from "@radix-ui/react-icons";
 import { Container, Stack, Separator, Icon, Button } from "@/src/components/ui";
+import { ResetAllMetadataSection } from "./reset-all-metadata-section";
 
 export default function SettingsPage() {
   const settingsCards = [
@@ -31,6 +40,27 @@ export default function SettingsPage() {
       title: "Worker Settings",
       description: "Configure background worker behavior, parallelism, and dry-run mode",
       color: "green",
+    },
+    {
+      href: "/settings/media",
+      icon: MagicWandIcon,
+      title: "Media Settings",
+      description: "Configure metadata matching, language preferences, and quality thresholds",
+      color: "violet",
+    },
+    {
+      href: "/settings/appearance",
+      icon: MoonIcon,
+      title: "Appearance",
+      description: "Customize theme, font size, and accessibility options",
+      color: "orange",
+    },
+    {
+      href: "/settings/advanced",
+      icon: MixerHorizontalIcon,
+      title: "Advanced",
+      description: "Auto duplicate detection, scan schedules, and system automation",
+      color: "red",
     },
   ];
 
@@ -69,7 +99,15 @@ export default function SettingsPage() {
                       ? "bg-purple-500/10 text-purple-400"
                       : card.color === "blue"
                       ? "bg-blue-500/10 text-blue-400"
-                      : "bg-green-500/10 text-green-400"
+                      : card.color === "green"
+                      ? "bg-green-500/10 text-green-400"
+                      : card.color === "violet"
+                      ? "bg-violet-500/10 text-violet-400"
+                      : card.color === "orange"
+                      ? "bg-orange-500/10 text-orange-400"
+                      : card.color === "red"
+                      ? "bg-red-500/10 text-red-400"
+                      : "bg-zinc-500/10 text-zinc-400"
                   }`}
                 >
                   <card.icon className="w-5 h-5" />
@@ -87,6 +125,10 @@ export default function SettingsPage() {
             </Link>
           ))}
         </div>
+
+        {/* Danger Zone */}
+        <Separator className="my-8" />
+        <ResetAllMetadataSection />
       </Container>
     </div>
   );

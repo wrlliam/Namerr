@@ -10,6 +10,9 @@ import {
   PlusIcon,
   VideoIcon,
   DesktopIcon,
+  CopyIcon,
+  CounterClockwiseClockIcon,
+  BarChartIcon,
 } from "@radix-ui/react-icons";
 
 export default async function DashboardPage() {
@@ -54,6 +57,27 @@ export default async function DashboardPage() {
             >
               <PlusIcon className="w-3 h-3" />
               Add Library
+            </Link>
+            <Link
+              href="/duplicates"
+              className="flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-900 text-xs text-zinc-300 px-3 py-1.5 hover:border-zinc-700 transition-colors"
+            >
+              <CopyIcon className="w-3 h-3" />
+              Duplicates
+            </Link>
+            <Link
+              href="/history"
+              className="flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-900 text-xs text-zinc-300 px-3 py-1.5 hover:border-zinc-700 transition-colors"
+            >
+              <CounterClockwiseClockIcon className="w-3 h-3" />
+              History
+            </Link>
+            <Link
+              href="/stats"
+              className="flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-900 text-xs text-zinc-300 px-3 py-1.5 hover:border-zinc-700 transition-colors"
+            >
+              <BarChartIcon className="w-3 h-3" />
+              Stats
             </Link>
             <Link
               href="/settings"

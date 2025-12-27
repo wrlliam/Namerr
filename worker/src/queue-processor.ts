@@ -19,6 +19,8 @@ import { PatternCleaner } from "../../src/lib/pattern-cleaner";
 import { MediaParser } from "../../src/lib/media-parser";
 import { FileRenamer } from "../../src/lib/file-renamer";
 import { SeerrClient } from "../../src/lib/seerr-client";
+import { TVOrganizer } from "../../src/lib/tv-organizer";
+import { renameHistoryService } from "../../src/lib/rename-history";
 import { WorkerHeartbeat } from "./lib/heartbeat";
 import * as path from "path";
 
@@ -29,6 +31,7 @@ interface ProcessingContext {
   cleaner: PatternCleaner;
   parser: MediaParser;
   renamer: FileRenamer;
+  tvOrganizer: TVOrganizer;
   seerrClient?: SeerrClient;
 }
 
@@ -50,9 +53,7 @@ export class QueueProcessor {
     const configs = await db
       .select()
       .from(systemConfig)
-      .where(
-        eq(systemConfig.key, "worker_parallelism")
-      );
+      .where(eq(systemConfig.key, "worker_parallelism"));
 
     const dryRunConfigs = await db
       .select()
@@ -61,7 +62,9 @@ export class QueueProcessor {
 
     const parallelism =
       configs.length > 0 && configs[0].value
-        ? Number((configs[0].value as { parallelism?: number }).parallelism || 4)
+        ? Number(
+            (configs[0].value as { parallelism?: number }).parallelism || 4
+          )
         : 4;
 
     const dryRun =
@@ -111,7 +114,12 @@ export class QueueProcessor {
       const filePath = path.join(library.path, file.filePath);
 
       // Parse filename if not already parsed
-      let mediaInfo: { title: string; year?: string; season?: number; episode?: number } = {
+      let mediaInfo: {
+        title: string;
+        year?: string;
+        season?: number;
+        episode?: number;
+      } = {
         title: file.parsedTitle || "",
         ...(file.parsedYear && { year: file.parsedYear }),
         ...(file.parsedSeason && { season: file.parsedSeason }),
@@ -119,7 +127,10 @@ export class QueueProcessor {
       };
 
       if (!file.parsedTitle) {
-        const filename = path.basename(file.fileName, path.extname(file.fileName));
+        const filename = path.basename(
+          file.fileName,
+          path.extname(file.fileName)
+        );
         if (library.type === "movie") {
           mediaInfo = context.parser.extractMovieInfo(filename);
         } else {
@@ -129,12 +140,27 @@ export class QueueProcessor {
 
       // Verify with Seerr if available
       if (context.seerrClient && !file.seerrVerified) {
-        jobLogger.info("Verifying with Seerr");
+        // Prefer deriving title from folder/file name rather than existing metadata
+        const { PatternCleaner } = await import(
+          "../../src/lib/pattern-cleaner"
+        );
+        const cleaner = new PatternCleaner();
+        const filenameBase =
+          file.fileName || path.basename(file.filePath || "");
+        const folderName = path.basename(path.dirname(file.filePath || ""));
+        const searchTitleRaw =
+          library.type === "tv" && folderName
+            ? folderName
+            : filenameBase.replace(path.extname(filenameBase), "");
+        const searchTitle = cleaner.cleanForSearch(searchTitleRaw);
+
         if (library.type === "movie") {
           const result = await context.seerrClient.verifyMovie(
-            mediaInfo.title,
+            searchTitle || mediaInfo.title,
             mediaInfo.year,
-            0.8
+            0.8,
+            false,
+            file.fileName
           );
           if (result.verified && result.data) {
             mediaInfo.title = result.data.title;
@@ -155,9 +181,33 @@ export class QueueProcessor {
               .where(eq(mediaFiles.id, file.id));
           }
         } else {
-          const result = await context.seerrClient.verifyTV(mediaInfo.title, 0.8);
+          const result = await context.seerrClient.verifyTV(
+            searchTitle || mediaInfo.title,
+            0.8,
+            false,
+            file.fileName
+          );
           if (result.verified && result.data) {
             mediaInfo.title = result.data.name;
+
+            // Fetch season name if we have season info
+            let seasonName: string | undefined;
+            let episodeName: string | undefined;
+            if (mediaInfo.season && result.data.id) {
+              const seasonDetails = await context.seerrClient.getTVSeasonDetails(
+                result.data.id,
+                mediaInfo.season
+              );
+              if (seasonDetails) {
+                seasonName = seasonDetails.name;
+                if (mediaInfo.episode) {
+                  const episode = seasonDetails.episodes.find(
+                    (ep) => ep.episodeNumber === mediaInfo.episode
+                  );
+                  episodeName = episode?.name;
+                }
+              }
+            }
 
             await db
               .update(mediaFiles)
@@ -169,8 +219,13 @@ export class QueueProcessor {
                 seerrOverview: result.data.overview,
                 seerrPosterPath: result.data.poster_path,
                 seerrMatchScore: result.data.match_score?.toString(),
+                seerrSeasonName: seasonName,
+                seerrEpisodeName: episodeName,
               })
               .where(eq(mediaFiles.id, file.id));
+
+            // Store season name for later use in organization
+            (file as any)._seasonName = seasonName;
           }
         }
       }
@@ -190,6 +245,19 @@ export class QueueProcessor {
           { dryRun: context.dryRun }
         );
       } else {
+        // For TV shows, calculate the target directory (Show/Season folder)
+        let targetDirectory: string | undefined;
+        if (finalSeason) {
+          const seasonName = (file as any)._seasonName || file.seerrSeasonName;
+          const { seasonFolder } = await context.tvOrganizer.ensureFolderStructure(
+            library.path,
+            finalTitle,
+            finalSeason,
+            seasonName
+          );
+          targetDirectory = seasonFolder;
+        }
+
         result = await context.renamer.renameTV(
           filePath,
           {
@@ -197,7 +265,7 @@ export class QueueProcessor {
             season: finalSeason,
             episode: finalEpisode,
           },
-          { dryRun: context.dryRun }
+          { dryRun: context.dryRun, targetDirectory }
         );
       }
 
@@ -209,10 +277,6 @@ export class QueueProcessor {
 
           if (this.heartbeat) {
             this.heartbeat.incrementFileCount("skipped");
-            await this.heartbeat.log("info", `File skipped: ${file.fileName}`, {
-              fileId: file.id,
-              reason: result.error || "Already correct or conflict",
-            });
           }
 
           await db.insert(workerJobLogs).values({
@@ -225,18 +289,10 @@ export class QueueProcessor {
             executionTimeMs: executionTime,
           });
         } else {
-          jobLogger.info("File renamed successfully", {
-            oldPath: result.oldPath,
-            newPath: result.newPath,
-          });
+          jobLogger.info(`Renamed: ${path.basename(result.oldPath || "")} -> ${path.basename(result.newPath || "")}`);
 
           if (this.heartbeat) {
             this.heartbeat.incrementFileCount("success");
-            await this.heartbeat.log("info", `File renamed: ${file.fileName} -> ${path.basename(result.newPath || "")}`, {
-              fileId: file.id,
-              oldPath: result.oldPath,
-              newPath: result.newPath,
-            });
           }
 
           // Update media file
@@ -250,6 +306,20 @@ export class QueueProcessor {
                 lastRenamedAt: new Date(),
               })
               .where(eq(mediaFiles.id, file.id));
+
+            // Record rename history for undo functionality
+            try {
+              await renameHistoryService.recordRename({
+                mediaFileId: file.id,
+                libraryId: library.id,
+                jobId: context.jobId,
+                oldPath: result.oldPath!,
+                newPath: result.newPath,
+                operationType: library.type === "tv" ? "organize" : "rename",
+              });
+            } catch (historyError) {
+              jobLogger.warn("Failed to record rename history", { historyError });
+            }
           }
 
           await db.insert(workerJobLogs).values({
@@ -263,14 +333,10 @@ export class QueueProcessor {
           });
         }
       } else {
-        jobLogger.error("File rename failed", { error: result.error });
+        jobLogger.error(`Rename failed: ${result.error}`);
 
         if (this.heartbeat) {
           this.heartbeat.incrementFileCount("error");
-          await this.heartbeat.log("error", `File rename failed: ${file.fileName}`, {
-            fileId: file.id,
-            error: result.error,
-          });
         }
 
         await db
@@ -293,9 +359,12 @@ export class QueueProcessor {
       }
     } catch (error) {
       const executionTime = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
-      jobLogger.error("Unexpected error processing file", { error: errorMessage });
+      jobLogger.error("Unexpected error processing file", {
+        error: errorMessage,
+      });
 
       await db
         .update(mediaFiles)
@@ -321,17 +390,13 @@ export class QueueProcessor {
    */
   private async processJob(job: typeof workerJobs.$inferSelect): Promise<void> {
     const jobLogger = logger.child({ jobId: job.id });
-    jobLogger.info("Processing job", { type: job.type, libraryId: job.libraryId });
+    jobLogger.info(`Starting ${job.type} job for library ${job.libraryId}`);
 
     try {
       // Set current job in heartbeat
       if (this.heartbeat) {
         this.heartbeat.setCurrentJob(job.id, 0);
         this.heartbeat.resetFileCounters();
-        await this.heartbeat.log("info", `Starting job: ${job.type}`, {
-          jobId: job.id,
-          libraryId: job.libraryId,
-        });
       }
 
       // Update job status to running
@@ -364,6 +429,7 @@ export class QueueProcessor {
         conflictResolution: "skip",
         handleSubtitles: true,
       });
+      const tvOrganizer = new TVOrganizer();
 
       // Get Seerr client if configured
       let seerrClient: SeerrClient | undefined;
@@ -384,6 +450,7 @@ export class QueueProcessor {
         cleaner,
         parser,
         renamer,
+        tvOrganizer,
         seerrClient,
       };
 
@@ -410,30 +477,26 @@ export class QueueProcessor {
 
       // Process files in parallel
       let processedCount = 0;
-      await this.processInParallel(
-        files,
-        context.parallelism,
-        async (file) => {
-          await this.processMediaFile(file, library, context);
-          processedCount++;
+      await this.processInParallel(files, context.parallelism, async (file) => {
+        await this.processMediaFile(file, library, context);
+        processedCount++;
 
-          const progress = Math.floor((processedCount / files.length) * 100);
+        const progress = Math.floor((processedCount / files.length) * 100);
 
-          // Update heartbeat with current progress
-          if (this.heartbeat) {
-            this.heartbeat.setCurrentJob(job.id, progress);
-          }
-
-          // Update progress
-          await db
-            .update(workerJobs)
-            .set({
-              processedItems: processedCount,
-              progress,
-            })
-            .where(eq(workerJobs.id, job.id));
+        // Update heartbeat with current progress
+        if (this.heartbeat) {
+          this.heartbeat.setCurrentJob(job.id, progress);
         }
-      );
+
+        // Update progress
+        await db
+          .update(workerJobs)
+          .set({
+            processedItems: processedCount,
+            progress,
+          })
+          .where(eq(workerJobs.id, job.id));
+      });
 
       // Mark job as completed
       await db
@@ -448,16 +511,13 @@ export class QueueProcessor {
       // Clear current job in heartbeat
       if (this.heartbeat) {
         this.heartbeat.setCurrentJob(null);
-        await this.heartbeat.log("info", `Job completed: ${job.type}`, {
-          jobId: job.id,
-          filesProcessed: files.length,
-        });
       }
 
-      jobLogger.info("Job completed successfully");
+      jobLogger.info(`Completed: processed ${files.length} files`);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      jobLogger.error("Job failed", { error: errorMessage });
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      jobLogger.error(`Failed: ${errorMessage}`);
 
       await db
         .update(workerJobs)

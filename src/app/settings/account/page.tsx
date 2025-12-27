@@ -22,6 +22,7 @@ import {
 } from "@radix-ui/react-icons";
 import { Label } from "@/src/components/ui/Input";
 import { Button } from "@/src/components/ui/Button";
+import { validatePassword, generateStrongPassword } from "@/src/lib/password-validation";
 
 interface User {
   id: string;
@@ -147,8 +148,10 @@ export default function AccountSettingsPage() {
       return;
     }
 
-    if (newPassword.length < 8) {
-      setError("New password must be at least 8 characters");
+    // Validate password strength
+    const validation = validatePassword(newPassword);
+    if (!validation.isValid) {
+      setError(validation.errors.join(". "));
       return;
     }
 
@@ -185,12 +188,7 @@ export default function AccountSettingsPage() {
   };
 
   const generateRandomPassword = () => {
-    const length = 16;
-    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
-    let password = "";
-    for (let i = 0; i < length; i++) {
-      password += charset.charAt(Math.floor(Math.random() * charset.length));
-    }
+    const password = generateStrongPassword(16);
     setNewUserPassword(password);
   };
 
@@ -208,6 +206,13 @@ export default function AccountSettingsPage() {
     e.preventDefault();
     if (!newUserEmail || !newUserName || !newUserPassword) {
       setError("All fields are required");
+      return;
+    }
+
+    // Validate password strength
+    const validation = validatePassword(newUserPassword);
+    if (!validation.isValid) {
+      setError(validation.errors.join(". "));
       return;
     }
 
@@ -392,7 +397,7 @@ export default function AccountSettingsPage() {
                   <button
                     type="button"
                     onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                   >
                     {showCurrentPassword ? (
                       <EyeClosedIcon className="w-4 h-4" />
@@ -410,12 +415,12 @@ export default function AccountSettingsPage() {
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded px-3 pr-10 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700"
-                    placeholder="At least 8 characters"
+                    placeholder="12+ chars, uppercase, lowercase, number, symbol"
                   />
                   <button
                     type="button"
                     onClick={() => setShowNewPassword(!showNewPassword)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                   >
                     {showNewPassword ? (
                       <EyeClosedIcon className="w-4 h-4" />
@@ -438,7 +443,7 @@ export default function AccountSettingsPage() {
                   <button
                     type="button"
                     onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                   >
                     {showConfirmPassword ? (
                       <EyeClosedIcon className="w-4 h-4" />
@@ -614,13 +619,13 @@ export default function AccountSettingsPage() {
                       value={newUserPassword}
                       onChange={(e) => setNewUserPassword(e.target.value)}
                       className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded px-3 pr-10 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700"
-                      placeholder="At least 8 characters"
+                      placeholder="12+ chars, uppercase, lowercase, number, symbol"
                       required
                     />
                     <button
                       type="button"
                       onClick={() => setShowNewUserPassword(!showNewUserPassword)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                     >
                       {showNewUserPassword ? (
                         <EyeClosedIcon className="w-4 h-4" />
